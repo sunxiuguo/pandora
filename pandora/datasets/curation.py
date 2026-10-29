@@ -3,9 +3,9 @@ from __future__ import annotations
 from pandora._util import now_iso
 from pandora.annotations.entry import polymer_asym_ids
 from pandora.canonicalisation import filter_ligands
-from pandora.canonicalisation.assemblies import _spans_within
 from pandora.canonicalisation.modified_residues import STANDARD_RESIDUES
 from pandora.canonicalisation.raw_categories import _drop_stale_raw_categories
+from pandora.canonicalisation.references import _prune_chain_references
 from pandora.datasets.completeness import chain_completeness
 from pandora.datasets.records import extract_chain_records
 from pandora.schemas.canonicalisation import LigandRules
@@ -250,8 +250,6 @@ def _drop_chains(structure: Structure, chain_ids: set[str]) -> Structure:
     """Copy of structure without chain_ids' atoms, asym units, connections
     and secondary structure."""
 
-    kept = {u.id for u in structure.asym_units} - chain_ids
-    ss = structure.secondary_structure
     dropped = structure.model_copy(
         update={
             "atoms": [
@@ -260,18 +258,6 @@ def _drop_chains(structure: Structure, chain_ids: set[str]) -> Structure:
             "asym_units": [
                 u for u in structure.asym_units if u.id not in chain_ids
             ],
-            "connections": [
-                c
-                for c in structure.connections
-                if c.ptnr1.label_asym_id in kept
-                and c.ptnr2.label_asym_id in kept
-            ],
-            "secondary_structure": ss.model_copy(
-                update={
-                    "conf_records": _spans_within(ss.conf_records, kept),
-                    "sheet_strands": _spans_within(ss.sheet_strands, kept),
-                }
-            ),
         }
     )
     return _drop_stale_references(structure, dropped)
@@ -280,32 +266,11 @@ def _drop_chains(structure: Structure, chain_ids: set[str]) -> Structure:
 def _drop_stale_references(
     original: Structure, filtered: Structure
 ) -> Structure:
-    """filtered without raw categories or assembly chain lists that refer
-    to chains or residues original had and filtered lost (else its mmCIF
-    export won't re-parse)."""
-
+    """Prune typed chain references and stale chain/residue raw categories."""
     raw, _ = _drop_stale_raw_categories(
         filtered.raw, original.atoms, filtered.atoms
     )
-    kept = {u.id for u in filtered.asym_units}
-    assemblies = [
-        asm.model_copy(
-            update={
-                "generators": [
-                    gen.model_copy(
-                        update={
-                            "asym_id_list": [
-                                c for c in gen.asym_id_list if c in kept
-                            ]
-                        }
-                    )
-                    for gen in asm.generators
-                ]
-            }
-        )
-        for asm in filtered.assemblies
-    ]
-    return filtered.model_copy(update={"raw": raw, "assemblies": assemblies})
+    return _prune_chain_references(filtered.model_copy(update={"raw": raw}))
 
 
 def _check_chain_counts(
@@ -508,8 +473,15 @@ def curate_structure(
 
     curated = _apply_content_rules(structure, policy.content_rules)
     dropped = sorted(set(original_raw) - set(curated.raw))
-    return (
-        curated,
-        records,
-        provenance.model_copy(update={"dropped_raw_categories": dropped}),
+    provenance = provenance.model_copy(
+        update={"dropped_raw_categories": dropped}
     )
+    polymer_ids = polymer_asym_ids(curated)
+    if not any(a.label_asym_id in polymer_ids for a in curated.atoms):
+        exclusion = ExclusionRecord(
+            entry_id=curated.entry_id,
+            reason_code="NO_CHAINS_LEFT",
+            message="no polymer atoms remain after curation",
+        )
+        return None, [*records, exclusion], provenance
+    return curated, records, provenance

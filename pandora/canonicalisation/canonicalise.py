@@ -24,6 +24,7 @@ from pandora.canonicalisation.modified_residues import (
     _map_modified_residues,
 )
 from pandora.canonicalisation.raw_categories import _drop_stale_raw_categories
+from pandora.canonicalisation.references import _prune_chain_references
 from pandora.canonicalisation.residues import _normalize_residue_numbering
 from pandora.canonicalisation.validation import _validate
 from pandora.schemas.canonicalisation import (
@@ -253,6 +254,8 @@ def canonicalise_structure(
             "secondary_structure": secondary_structure,
         }
     )
+
+    canonical = _prune_chain_references(canonical)
 
     mappings = CanonicalMappings(
         chain_id_mapping=chain_id_mapping,
